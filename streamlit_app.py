@@ -4,10 +4,9 @@ Audience Sensitivity, Content Compliance & Format Preference Analysis
 France Top 50 Playlist — Streamlit Dashboard
 
 Run with:  streamlit run streamlit_app.py
-Requires:  streamlit, pandas, plotly, numpy  (pip install streamlit pandas plotly numpy)
-Data file: upload atlantic_france_clean.csv (or the raw Atlantic_France.csv)
-           from the sidebar file picker when the app opens — no need to
-           place it next to this script.
+Requires:  streamlit, pandas, plotly  (pip install streamlit pandas plotly)
+Data file: atlantic_france_clean.csv must sit alongside this script
+           (or update DATA_PATH below).
 """
 
 import pandas as pd
@@ -33,94 +32,44 @@ GREY = "#7a7a7a"
 BLUE = "#3a6ea5"
 PALETTE = [NAVY, RED, GOLD, BLUE, GREY]
 
-# Optional fallback: if a file with this name sits next to the script,
-# it's offered as a "use bundled data" option — but the file picker below
-# always works even if this path does not exist.
-DEFAULT_DATA_PATH = "atlantic_france_clean.csv"
+DATA_PATH = "atlantic_france_clean.csv"
 
 st.markdown(
     f"""
     <style>
-    .stApp, [data-testid="stAppViewContainer"], [data-testid="stHeader"],
-    .main {{ background-color: #f7f8fa !important; color: #1a1a1a !important; }}
-    [data-testid="stSidebar"] {{ background-color: #ffffff !important; }}
-    [data-testid="stSidebar"] * {{ color: #1a1a1a !important; }}
-    .stApp p, .stApp span, .stApp label, .stApp div {{ color: #1a1a1a; }}
-    .stMetric {{ background-color: white !important; padding: 14px; border-radius: 10px;
+    .main {{ background-color: #f7f8fa; }}
+    .stMetric {{ background-color: white; padding: 14px; border-radius: 10px;
                  border: 1px solid #e5e7eb; }}
-    [data-testid="stMetricValue"] {{ color: {NAVY} !important; }}
-    [data-testid="stMetricLabel"] {{ color: #444444 !important; }}
-    h1, h2, h3 {{ color: {NAVY} !important; }}
-    .compliance-box {{ background-color: #fff3f3 !important; border-left: 5px solid {RED};
+    h1, h2, h3 {{ color: {NAVY}; }}
+    .compliance-box {{ background-color: #fff3f3; border-left: 5px solid {RED};
                         padding: 14px 18px; border-radius: 6px; }}
-    .compliance-box, .compliance-box b {{ color: #3a1010 !important; }}
-    [data-testid="stDataFrame"], [data-testid="stTable"] {{ background-color: #ffffff !important; }}
     </style>
     """,
     unsafe_allow_html=True,
 )
 
 # ------------------------------------------------------------------
-# Data loading — cleans whatever CSV comes in (raw export OR
-# already-cleaned file), so either can be uploaded.
+# Data loading
 # ------------------------------------------------------------------
-REQUIRED_COLUMNS = {
-    "date", "position", "song", "artist", "popularity", "duration_ms",
-    "album_type", "total_tracks", "is_explicit",
-}
-
-
-@st.cache_data(show_spinner="Cleaning and preparing data...")
-def load_and_clean(file_bytes_or_path):
-    # Try UTF-8 first, fall back to Latin-1 (handles accented French titles
-    # in the raw Atlantic export).
-    try:
-        df = pd.read_csv(file_bytes_or_path, encoding="utf-8")
-    except UnicodeDecodeError:
-        if hasattr(file_bytes_or_path, "seek"):
-            file_bytes_or_path.seek(0)
-        df = pd.read_csv(file_bytes_or_path, encoding="latin1")
-
-    missing = REQUIRED_COLUMNS - set(df.columns)
-    if missing:
-        raise ValueError(
-            f"This file is missing required column(s): {', '.join(sorted(missing))}. "
-            "Upload the Atlantic France Top 50 export (raw or cleaned)."
-        )
-
-    # Deduplicate and drop rows with no song title
-    df = df.drop_duplicates()
-    df = df.dropna(subset=["song"])
-
-    # Parse date — accept either DD-MM-YYYY (raw export) or ISO (cleaned export)
-    parsed = pd.to_datetime(df["date"], format="%d-%m-%Y", errors="coerce")
-    if parsed.isna().mean() > 0.5:  # most failed -> try generic/ISO parse instead
-        parsed = pd.to_datetime(df["date"], errors="coerce")
-    df["date"] = parsed
-    df = df.dropna(subset=["date"])
-
-    # Duration in minutes
+@st.cache_data
+def load_data(path):
+    df = pd.read_csv(path, parse_dates=["date"])
     if "duration_min" not in df.columns:
         df["duration_min"] = df["duration_ms"] / 60000
+    return df
 
-    # Standardize album type
-    df["album_type"] = df["album_type"].astype(str).str.strip().str.lower()
-    df.loc[~df["album_type"].isin(["single", "album", "compilation"]), "album_type"] = "other"
 
-    # Boolean explicit flag
-    df["is_explicit"] = df["is_explicit"].astype(bool)
-
-    # Rank tier
-    df["rank_tier"] = np.where(
-        df["position"] <= 10, "Top 10",
-        np.where(df["position"] <= 25, "Top 25", "Top 50"),
+try:
+    df_raw = load_data(DATA_PATH)
+except FileNotFoundError:
+    st.error(
+        f"Could not find `{DATA_PATH}`. Place the cleaned dataset in the same "
+        "folder as this script, or edit DATA_PATH at the top of the file."
     )
-
-    return df.reset_index(drop=True)
-
+    st.stop()
 
 # ------------------------------------------------------------------
-# Sidebar — data source picker + filters
+# Sidebar — User Capabilities (filters)
 # ------------------------------------------------------------------
 st.sidebar.image(
     "https://upload.wikimedia.org/wikipedia/commons/2/2b/Flag_of_France.svg",
@@ -130,48 +79,6 @@ st.sidebar.title("Atlantic Recording Corp.")
 st.sidebar.caption("France Top 50 — Content Compliance Dashboard")
 st.sidebar.markdown("---")
 
-st.sidebar.subheader("Data Source")
-uploaded_file = st.sidebar.file_uploader(
-    "Choose a CSV file (raw or cleaned export)",
-    type=["csv"],
-    help="Upload Atlantic_France.csv or atlantic_france_clean.csv. "
-         "The app cleans it automatically either way.",
-)
-
-df_raw = None
-load_error = None
-
-if uploaded_file is not None:
-    try:
-        df_raw = load_and_clean(uploaded_file)
-        st.sidebar.success(f"Loaded {len(df_raw):,} rows from `{uploaded_file.name}`.")
-    except Exception as e:
-        load_error = str(e)
-else:
-    # No upload yet — offer the bundled file if it happens to exist,
-    # otherwise just wait for the user to pick one.
-    import os
-    if os.path.exists(DEFAULT_DATA_PATH):
-        if st.sidebar.button(f"Use bundled `{DEFAULT_DATA_PATH}`"):
-            try:
-                df_raw = load_and_clean(DEFAULT_DATA_PATH)
-                st.sidebar.success(f"Loaded {len(df_raw):,} rows from the bundled file.")
-            except Exception as e:
-                load_error = str(e)
-
-if load_error:
-    st.sidebar.error(load_error)
-
-if df_raw is None:
-    st.title("🇫🇷 France Top 50 — Content Compliance & Format Intelligence")
-    st.info(
-        "👈 Upload the Atlantic France Top 50 CSV file from the sidebar to get started. "
-        "You can upload either the raw export or the pre-cleaned dataset — "
-        "the app validates and cleans it automatically."
-    )
-    st.stop()
-
-st.sidebar.markdown("---")
 st.sidebar.subheader("Filters")
 
 min_date, max_date = df_raw["date"].min(), df_raw["date"].max()
